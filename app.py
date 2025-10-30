@@ -8,7 +8,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 app = Flask(__name__)
-CORS(app)  # CORS обратно!
+CORS(app)
 
 # Конфигурация БД
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
@@ -17,7 +17,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Инициализация Swagger (исправленная версия)
+# Инициализация Swagger
 api = Api(
     app,
     version='1.0',
@@ -276,7 +276,7 @@ class BookResource(Resource):
             logger.error(f"Error deleting book {book_id}: {str(e)}")
             return {'error': 'Internal server error'}, 500
 
-# Health check endpoint (отдельно от Swagger для прямого доступа)
+# Health check endpoint
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
