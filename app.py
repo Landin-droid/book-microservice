@@ -8,22 +8,24 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # CORS обратно!
 
 # Конфигурация БД
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 
+    'DATABASE_URL',
     'postgresql://bookuser:bookpass@db:5432/bookdb'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Инициализация Swagger
+# Инициализация Swagger (исправленная версия)
 api = Api(
-    app, 
-    version='1.0', 
+    app,
+    version='1.0',
     title='Book Management API',
     description='A simple Book Management Microservice',
-    doc='/swagger/'
+    doc='/swagger/',
+    default='Books',
+    default_label='Book operations'
 )
 
 db = SQLAlchemy(app)
@@ -40,8 +42,8 @@ formatter = logging.Formatter(
 )
 
 file_handler = RotatingFileHandler(
-    'logs/app.log', 
-    maxBytes=10485760, 
+    'logs/app.log',
+    maxBytes=10485760,
     backupCount=5
 )
 file_handler.setFormatter(formatter)
@@ -81,15 +83,15 @@ class Book(db.Model):
 # Валидация данных
 def validate_book_data(data, partial=False):
     errors = []
-    
+
     if not partial or 'title' in data:
         if not data.get('title') or len(data.get('title', '').strip()) == 0:
             errors.append("Title is required")
-    
+
     if not partial or 'author' in data:
         if not data.get('author') or len(data.get('author', '').strip()) == 0:
             errors.append("Author is required")
-    
+
     if not partial or 'year' in data:
         if data.get('year') is not None:
             try:
@@ -100,11 +102,11 @@ def validate_book_data(data, partial=False):
                 errors.append("Year must be a valid integer")
         elif not partial:
             errors.append("Year is required")
-    
+
     if not partial or 'isbn' in data:
         if not data.get('isbn') and not partial:
             errors.append("ISBN is required")
-    
+
     return errors
 
 # Namespace для книг
@@ -119,6 +121,8 @@ with app.app_context():
 # 1. GET /books - получить все книги
 @ns.route('/')
 class BookList(Resource):
+    @ns.response(200, 'Success')
+    @ns.response(500, 'Internal Server Error')
     def get(self):
         """Get all books"""
         try:
@@ -134,40 +138,44 @@ class BookList(Resource):
 
     # 2. POST /books - создать новую книгу
     @ns.expect(book_model)
+    @ns.response(201, 'Book created')
+    @ns.response(400, 'Validation error')
+    @ns.response(409, 'ISBN conflict')
+    @ns.response(500, 'Internal Server Error')
     def post(self):
         """Create a new book"""
         try:
             data = request.get_json()
-            
+
             if not data:
                 logger.warning("No JSON data provided")
                 return {'error': 'No JSON data provided'}, 400
-            
+
             errors = validate_book_data(data)
             if errors:
                 logger.warning(f"Validation errors: {errors}")
                 return {'errors': errors}, 400
-            
+
             if Book.query.filter_by(isbn=data['isbn']).first():
                 logger.warning(f"ISBN already exists: {data['isbn']}")
                 return {'error': 'Book with this ISBN already exists'}, 409
-            
+
             book = Book(
                 title=data['title'],
                 author=data['author'],
                 year=data['year'],
                 isbn=data['isbn']
             )
-            
+
             db.session.add(book)
             db.session.commit()
-            
+
             logger.info(f"Created book: {book.title} (ID: {book.id})")
             return {
                 'message': 'Book created successfully',
                 'book': book.to_dict()
             }, 201
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error creating book: {str(e)}")
@@ -177,7 +185,10 @@ class BookList(Resource):
 @ns.route('/<int:book_id>')
 @ns.param('book_id', 'The book identifier')
 class BookResource(Resource):
-    
+
+    @ns.response(200, 'Success')
+    @ns.response(404, 'Book not found')
+    @ns.response(500, 'Internal Server Error')
     def get(self, book_id):
         """Get a book by ID"""
         try:
@@ -185,7 +196,7 @@ class BookResource(Resource):
             if not book:
                 logger.warning(f"Book {book_id} not found")
                 return {'error': 'Book not found'}, 404
-            
+
             logger.info(f"Retrieved book: ID={book_id}")
             return {'book': book.to_dict()}, 200
         except Exception as e:
@@ -193,24 +204,30 @@ class BookResource(Resource):
             return {'error': 'Internal server error'}, 500
 
     @ns.expect(book_model)
+    @ns.response(200, 'Book updated')
+    @ns.response(400, 'Validation error')
+    @ns.response(404, 'Book not found')
+    @ns.response(409, 'ISBN conflict')
+    @ns.response(500, 'Internal Server Error')
     def put(self, book_id):
         """Update a book"""
         try:
+            data = request.get_json()
+
+            if not data:
+                logger.warning(f"No JSON data for book {book_id}")
+                return {'error': 'No JSON data provided'}, 400
+
             book = Book.query.get(book_id)
             if not book:
                 logger.warning(f"Book {book_id} not found")
                 return {'error': 'Book not found'}, 404
-            
-            data = request.get_json()
-            if not data:
-                logger.warning(f"No JSON data for book {book_id}")
-                return {'error': 'No JSON data provided'}, 400
-            
+
             errors = validate_book_data(data)
             if errors:
                 logger.warning(f"Validation errors for book {book_id}: {errors}")
                 return {'errors': errors}, 400
-            
+
             existing_book = Book.query.filter(
                 Book.isbn == data['isbn'],
                 Book.id != book_id
@@ -218,25 +235,28 @@ class BookResource(Resource):
             if existing_book:
                 logger.warning(f"ISBN conflict for book {book_id}")
                 return {'error': 'Another book with this ISBN already exists'}, 409
-            
+
             book.title = data['title']
             book.author = data['author']
             book.year = data['year']
             book.isbn = data['isbn']
-            
+
             db.session.commit()
-            
+
             logger.info(f"Updated book ID {book_id}")
             return {
                 'message': 'Book updated successfully',
                 'book': book.to_dict()
             }, 200
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error updating book {book_id}: {str(e)}")
             return {'error': 'Internal server error'}, 500
 
+    @ns.response(200, 'Book deleted')
+    @ns.response(404, 'Book not found')
+    @ns.response(500, 'Internal Server Error')
     def delete(self, book_id):
         """Delete a book"""
         try:
@@ -244,28 +264,28 @@ class BookResource(Resource):
             if not book:
                 logger.warning(f"Book {book_id} not found")
                 return {'error': 'Book not found'}, 404
-            
+
             db.session.delete(book)
             db.session.commit()
-            
+
             logger.info(f"Deleted book ID {book_id}")
             return {'message': 'Book deleted successfully'}, 200
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error deleting book {book_id}: {str(e)}")
             return {'error': 'Internal server error'}, 500
 
-# Health check endpoint
+# Health check endpoint (отдельно от Swagger для прямого доступа)
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
     try:
         Book.query.limit(1).all()
-        return {'status': 'healthy', 'database': 'connected'}, 200
+        return jsonify({'status': 'healthy', 'database': 'connected'}), 200
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        return {'status': 'unhealthy', 'database': 'disconnected'}, 500
+        return jsonify({'status': 'unhealthy', 'database': 'disconnected'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
